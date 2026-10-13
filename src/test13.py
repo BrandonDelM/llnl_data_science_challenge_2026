@@ -1,136 +1,74 @@
-import json
 import numpy as np
-import trimesh
+import pyvista as pv
 import tifffile
 
-def crop_stl_and_tif_to_json_bounds(
-    json_path, stl_path, tif_path, 
-    output_stl_path, output_tif_path, 
-    pixel_size_x, pixel_size_y, pixel_size_z, 
-    origin_x=0.0, origin_y=0.0, origin_z=0.0
-):
-    # ==========================================
-    # STEP 1: EXTRACT & SWAP BOUNDS FROM JSON
-    # ==========================================
-    print(f"1. Loading coordinates from {json_path}...")
-    with open(json_path, 'r') as f:
-        json_data = json.load(f)
-    
-    # Extract positions as (X, Y, Z)
-    points = np.array([j["position"] for j in json_data["junctions"]])
+# ---------- 1. Load TIF and Setup Grid ----------
+volume = tifffile.imread('data/missing_struts/tif_stacks/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.tif')
+volume = volume.copy()
+volume[volume < 43400] = 0
 
-    # SWAP AXES: (X, Y, Z) -> (Z, Y, X)
-    points = points[:, [2, 1, 0]]
+print("TIF volume shape:", volume.shape)
 
-    # Calculate bounds based on the newly swapped axes
-    x_min, x_max = points[:, 0].min(), points[:, 0].max()
-    y_min, y_max = points[:, 1].min(), points[:, 1].max()
-    z_min, z_max = points[:, 2].min(), points[:, 2].max()
+grid = pv.ImageData()
+grid.dimensions = np.array(volume.shape) + 1
+grid.spacing = (1, 1, 1)
 
-    print("\n   Swapped JSON Bounds:")
-    print(f"   X (Old Z): {x_min:.2f} to {x_max:.2f}")
-    print(f"   Y (Old Y): {y_min:.2f} to {y_max:.2f}")
-    print(f"   Z (Old X): {z_min:.2f} to {z_max:.2f}")
+# Center the ENTIRE TIF grid (including the empty space) at (0,0,0)
+grid.origin = (0, 0, 0) # Set to 0 to calculate true center
+grid_center = np.array(grid.center)
+grid.origin = -grid_center # Shift origin so the grid's center is precisely (0,0,0)
 
-    # ==========================================
-    # STEP 2: CROP THE TIF (Using swapped bounds)
-    # ==========================================
-    print("\n2. Converting swapped coordinates to TIF indices...")
-    px_x_min = int(np.floor((x_min - origin_x) / pixel_size_x))
-    px_x_max = int(np.ceil((x_max - origin_x) / pixel_size_x))
+print("Full TIF Canvas Bounds (Grid):", grid.bounds)
 
-    px_y_min = int(np.floor((y_min - origin_y) / pixel_size_y))
-    px_y_max = int(np.ceil((y_max - origin_y) / pixel_size_y))
+grid.cell_data['density'] = volume.flatten(order='F')
 
-    px_z_min = int(np.floor((z_min - origin_z) / pixel_size_z))
-    px_z_max = int(np.ceil((z_max - origin_z) / pixel_size_z))
+# Because the grid is centered, the thresholded surface is inherently centered too
+threshold = volume.max() * 0.5
+tif_surface = grid.threshold(threshold).extract_surface()
 
-    print("3. Loading and cropping the TIF image...")
-    tif_array = tifffile.imread(tif_path)
+# ---------- 2. Load and Align STL ----------
+stl_mesh = pv.read('perfectly_aligned_cropped_model.stl')
 
-    # Clamp indices to TIF shape (Z, Y, X)
-    px_z_min = max(0, px_z_min)
-    px_z_max = min(tif_array.shape[0], px_z_max)
+# Apply the rotation that registers them
+stl_mesh.rotate_z(90, inplace=True)  
 
-    px_y_min = max(0, px_y_min)
-    px_y_max = min(tif_array.shape[1], px_y_max)
+# Center the STL at (0,0,0)
+stl_center = np.array(stl_mesh.center)
+stl_mesh.translate(-stl_center, inplace=True)
 
-    px_x_min = max(0, px_x_min)
-    px_x_max = min(tif_array.shape[2], px_x_max)
+# ---------- 3. CROP THE STL ----------
+# Instead of using tif_surface.bounds, we use the FULL grid.bounds
+# This ensures we slice exactly at the edges of the TIF array, catching the excess metal
+print("\nCropping STL using full scan bounds:", grid.bounds)
 
-    cropped_tif = tif_array[px_z_min:px_z_max, px_y_min:px_y_max, px_x_min:px_x_max]
-    tifffile.imwrite(output_tif_path, cropped_tif)
-    print(f"   Cropped TIF saved to: {output_tif_path}")
+# Clip the mesh to the exact boundaries of the TIF canvas
+cropped_stl = stl_mesh.clip_box(grid.bounds, invert=False)
 
-    # ==========================================
-    # STEP 3: BACK-CALCULATE GRID SNAP BOUNDS
-    # ==========================================
-    grid_x_min = (px_x_min * pixel_size_x) + origin_x
-    grid_x_max = (px_x_max * pixel_size_x) + origin_x
-    
-    grid_y_min = (px_y_min * pixel_size_y) + origin_y
-    grid_y_max = (px_y_max * pixel_size_y) + origin_y
-    
-    grid_z_min = (px_z_min * pixel_size_z) + origin_z
-    grid_z_max = (px_z_max * pixel_size_z) + origin_z
+print("Final Cropped STL bounds:", cropped_stl.bounds)
 
-    print("\n   GRID-SNAPPED BOUNDS (Perfect Alignment):")
-    print(f"   X: {grid_x_min:.2f} to {grid_x_max:.2f}")
-    print(f"   Y: {grid_y_min:.2f} to {grid_y_max:.2f}")
-    print(f"   Z: {grid_z_min:.2f} to {grid_z_max:.2f}")
+# Save the perfectly aligned and cropped STL
+# cropped_stl.save('test/final_aligned_and_cropped_model_full_bounds.stl')
 
-    # ==========================================
-    # STEP 4: LOAD, SWAP AXES, AND SLICE THE STL
-    # ==========================================
-    print("\n4. Loading, swapping axes, and slicing the STL...")
-    mesh = trimesh.load(stl_path)
-    
-    # SWAP AXES: Reorder the vertices from (X, Y, Z) to (Z, Y, X)
-    mesh.vertices = mesh.vertices[:, [2, 1, 0]]
-    
-    # IMPORTANT: Swapping two axes mirrors the geometry. 
-    # We must invert the mesh to restore outward-facing normals.
-    mesh.invert()
+# ---------- 4. Plot both together to verify ----------
+pl = pv.Plotter()
 
-    # Slice X axis using the grid-snapped boundaries
-    mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_origin=[grid_x_min, 0, 0], plane_normal=[1, 0, 0])
-    mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_origin=[grid_x_max, 0, 0], plane_normal=[-1, 0, 0])
+# Add TIF
+pl.add_mesh(tif_surface, color='red', opacity=0.4, label='TIF scan')
 
-    # Slice Y axis
-    mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_origin=[0, grid_y_min, 0], plane_normal=[0, 1, 0])
-    mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_origin=[0, grid_y_max, 0], plane_normal=[0, -1, 0])
+# Add Cropped STL
+pl.add_mesh(cropped_stl, color='silver', opacity=0.4, label='Cropped STL')
 
-    # Slice Z axis
-    mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_origin=[0, 0, grid_z_min], plane_normal=[0, 0, 1])
-    mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_origin=[0, 0, grid_z_max], plane_normal=[0, 0, -1])
+# Add the Grid Bounding Box to visualize the "crop box"
+pl.add_mesh(grid.outline(), color='blue', line_width=2, label='TIF Canvas Bounds')
+surface_mesh = cropped_stl.extract_surface()
 
-    if len(mesh.vertices) == 0:
-        raise ValueError("Slicing produced an empty mesh — check coordinate alignment!")
+# 2. Convert any polygon/quad cuts into strict triangles (STL requirement)
+triangulated_mesh = surface_mesh.triangulate()
 
-    mesh.export(output_stl_path)
-    print(f"   Cropped STL saved to: {output_stl_path}")
-    print("\nSuccess! Both files are now bound to the exact same grid-snapped coordinates.")
+# 3. Save the final STL
+triangulated_mesh.save("test/potential_perfect_alignment.stl")
 
-
-if __name__ == "__main__":
-    PIXEL_SIZE_X = 1.0
-    PIXEL_SIZE_Y = 1.0
-    PIXEL_SIZE_Z = 1.0
-
-    ORIGIN_X = 0.0
-    ORIGIN_Y = 0.0
-    ORIGIN_Z = 0.0
-
-    crop_stl_and_tif_to_json_bounds(
-        json_path="data/missing_struts/registered_jsons/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.json",
-        stl_path="test/registered_model_0.5.stl",
-        tif_path="data/missing_struts/tif_stacks/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.tif",
-        output_stl_path="test/final_cropped_model_0.5.stl",
-        output_tif_path="test/final_cropped_image_0.5.tif",
-        pixel_size_x=PIXEL_SIZE_X,
-        pixel_size_y=PIXEL_SIZE_Y,
-        pixel_size_z=PIXEL_SIZE_Z,
-        origin_x=ORIGIN_X,
-        origin_y=ORIGIN_Y,
-        origin_z=ORIGIN_Z
-    )
+pl.add_legend()
+pl.add_axes()
+pl.show_grid()
+pl.show()

@@ -4,7 +4,8 @@ import tifffile
 
 # ---------- Load TIF volume ----------
 # volume = tifffile.imread('data/missing_struts/tif_stacks/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.tif')
-volume = tifffile.imread('test/final_cropped_image_0.5.tif')
+# volume = tifffile.imread('test/final_co_cropped_image.tif')
+volume = tifffile.imread('test/json_cropped_aligned_tif.tif')
 
 # volume[volume < 47000] = 0
 volume[volume < 43400] = 0
@@ -26,8 +27,9 @@ tif_surface.translate(-tif_center, inplace=True)
 print("TIF surface bounds after centering:", tif_surface.bounds)
 
 # ---------- Load STL mesh ----------
-stl_mesh = pv.read('test/final_cropped_model_0.5.stl')
+# stl_mesh = pv.read('test/final_co_cropped_model.stl')
 # stl_mesh = pv.read('registered_model.stl')
+stl_mesh = pv.read('test/json_cropped_aligned_stl.stl')
 # stl_mesh = pv.read('model_aligned_cropped.stl')
 # stl_mesh = pv.read('perfectly_aligned_cropped_model.stl')
 
@@ -43,7 +45,7 @@ print("After centering, STL bounds:", stl_mesh.bounds)
 pl = pv.Plotter()
 pl.add_mesh(tif_surface, color='red', opacity=0.4, label='TIF scan')
 tif_box = tif_surface.bounding_box()
-pl.add_mesh(stl_mesh, color='silver', opacity=0.4, label='STL')
+pl.add_mesh(stl_mesh, color='blue', opacity=0.4, label='STL')
 mesh_box = stl_mesh.bounding_box()
 # pl.add_mesh(tif_box, color='green', opacity=0.1, label='TIF bounding box')
 # pl.add_mesh(mesh_box, color='blue', opacity=0.1, label='STL bounding box')

@@ -13,7 +13,9 @@ def load_stl(input_filepath: str, output_filepath: str):
     mesh = pv.read(input_filepath)
     print(get_bounds(mesh))
     pl = pv.Plotter()
-    pl.add_mesh(mesh)
+    origin = (mesh.center[0], 0, mesh.center[2])
+    slice = mesh.slice(normal=[0, 1, 0], origin=origin)
+    pl.add_mesh(slice)
     # pl.camera_position = 'xz'
     # pl.reset_camera()
     # pl.camera.zoom('tight')
@@ -51,4 +53,5 @@ def screenshot_slice(input_filepath):
         print(f"Erorr while taking a screenshot slice: {e}")
         return False
 
-screenshot_slice('perfectly_aligned_cropped_model.stl')
+
+load_stl('data/missing_struts/stls/0.stl', None)

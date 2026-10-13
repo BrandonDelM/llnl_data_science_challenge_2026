@@ -2,82 +2,62 @@ import numpy as np
 import pyvista as pv
 import tifffile
 
-def scale_stl_to_tif_bounds(stl_mesh, tif_bounds):
-    """
-    Scales and translates an STL mesh so its bounding box matches
-    the given TIF bounding box exactly, per axis.
-
-    Parameters
-    ----------
-    stl_mesh : pv.PolyData
-        The STL mesh to transform (modified in place).
-    tif_bounds : tuple or array-like
-        (xmin, xmax, ymin, ymax, zmin, zmax) — e.g. grid.bounds
-
-    Returns
-    -------
-    pv.PolyData
-        The same mesh, scaled and translated to match tif_bounds.
-    """
-    tif_bounds = np.array(tif_bounds)
-    tif_min = tif_bounds[::2]   # [xmin, ymin, zmin]
-    tif_max = tif_bounds[1::2]  # [xmax, ymax, zmax]
-    tif_extents = tif_max - tif_min
-
-    stl_bounds = np.array(stl_mesh.bounds)
-    stl_min = stl_bounds[::2]
-    stl_max = stl_bounds[1::2]
-    stl_extents = stl_max - stl_min
-
-    # Move STL's min corner to origin first
-    stl_mesh.translate(-stl_min, inplace=True)
-
-    # Per-axis scale factor to stretch STL extents to match TIF extents
-    per_axis_scale = tif_extents / stl_extents
-    print("Per-axis scale factors (x, y, z):", per_axis_scale)
-
-    # Non-uniform scale: pv.PolyData.scale accepts a 3-element list for per-axis scaling
-    stl_mesh.scale(per_axis_scale, inplace=True)
-
-    # Move to TIF's actual origin (in case it's not (0,0,0))
-    stl_mesh.translate(tif_min, inplace=True)
-
-    print("Final STL bounds:", stl_mesh.bounds)
-    print("Target TIF bounds:", tif_bounds)
-
-    return stl_mesh
-
-volume = tifffile.imread('data/missing_struts/tif_stacks/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.tif')  # shape: (pages, H, W)
+# ---------- 1. Load RAW TIF & Align Grid ----------
+tif_path = 'data/missing_struts/tif_stacks/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.tif'
+volume = tifffile.imread(tif_path)
+volume[volume < 43400] = 0
 
 grid = pv.ImageData()
 grid.dimensions = np.array(volume.shape) + 1
-grid.spacing = (1, 1, 1)          # set real voxel spacing here if known
+grid.spacing = (1, 1, 1)
+
 grid.origin = (0, 0, 0)
-grid.cell_data['density'] = volume.flatten(order='F')
+grid.origin = -np.array(grid.center)  # Shift TIF canvas to (0,0,0)
 
-stl_mesh = pv.read('cropped_0.stl')
-print("stl before: ", stl_mesh.bounds)
-stl_mesh.rotate_z(90, inplace=True)  # apply your correct orientation fix first
+ox, oy, oz = grid.origin
+sx, sy, sz = grid.spacing
 
-stl_min = np.array(stl_mesh.bounds[::2])
-stl_mesh.translate(-stl_min, inplace=True)  # normalize before fitting to TIF bounds
+# ---------- 2. Load and Align the STL ----------
+stl_mesh = pv.read('perfectly_aligned_cropped_model.stl')
+stl_mesh.rotate_z(90, inplace=True)  
+stl_mesh.translate(-np.array(stl_mesh.center), inplace=True)
+stl_bounds = stl_mesh.bounds
 
+# ---------- 3. Map STL Bounds to TIF Indices ----------
+idx_x_min = max(0, int(np.floor((stl_bounds[0] - ox) / sx)))
+idx_x_max = min(volume.shape[0], int(np.ceil((stl_bounds[1] - ox) / sx)))
 
-uniform_scale_factor = np.mean([(grid.bounds[1]-grid.bounds[0])/(stl_mesh.bounds[1]-stl_mesh.bounds[0]),
-                                (grid.bounds[3]-grid.bounds[2])/(stl_mesh.bounds[3]-stl_mesh.bounds[2]),
-                                (grid.bounds[5]-grid.bounds[4])/(stl_mesh.bounds[5]-stl_mesh.bounds[4])])
-# stl_mesh.scale(uniform_scale_factor, inplace=True)
-stl_mesh.scale([(grid.bounds[1]-grid.bounds[0])/(stl_mesh.bounds[1]-stl_mesh.bounds[0]),
-                                (grid.bounds[3]-grid.bounds[2])/(stl_mesh.bounds[3]-stl_mesh.bounds[2]),
-                                (grid.bounds[5]-grid.bounds[4])/(stl_mesh.bounds[5]-stl_mesh.bounds[4])], inplace=True)
+idx_y_min = max(0, int(np.floor((stl_bounds[2] - oy) / sy)))
+idx_y_max = min(volume.shape[1], int(np.ceil((stl_bounds[3] - oy) / sy)))
 
+idx_z_min = max(0, int(np.floor((stl_bounds[4] - oz) / sz)))
+idx_z_max = min(volume.shape[2], int(np.ceil((stl_bounds[5] - oz) / sz)))
 
-stl_min = np.array(stl_mesh.bounds[::2])
-stl_mesh.translate(-stl_min, inplace=True)
+# ---------- 4. Crop and Save the TIF ----------
+print("Cropping and saving TIF...")
+cropped_volume = volume[idx_x_min:idx_x_max, idx_y_min:idx_y_max, idx_z_min:idx_z_max]
 
-print("Final STL bounds:", stl_mesh.bounds)
-print("TIF bounds:", grid.bounds)
+tifffile.imwrite('test/final_co_cropped_image.tif', cropped_volume)
+print("Saved TIF! Shape:", cropped_volume.shape)
 
-stl_mesh.save("test_0.stl")
+# ---------- 5. Back-Calculate Grid-Snapped Bounds ----------
+# This computes the EXACT physical space the newly cropped TIF array occupies
+snapped_bounds = [
+    ox + (idx_x_min * sx), ox + (idx_x_max * sx),
+    oy + (idx_y_min * sy), oy + (idx_y_max * sy),
+    oz + (idx_z_min * sz), oz + (idx_z_max * sz)
+]
 
-# scale_stl_to_tif_bounds(stl_mesh, grid.bounds)
+print(f"\nOriginal STL Bounds: {np.round(stl_bounds, 2)}")
+print(f"Snapped Grid Bounds: {np.round(snapped_bounds, 2)}")
+
+# ---------- 6. Crop and Save the STL to the Snapped Bounds ----------
+print("\nCropping STL to perfectly match the grid-snapped TIF...")
+cropped_stl = stl_mesh.clip_box(snapped_bounds, invert=False)
+
+# Convert from UnstructuredGrid back to STL-compatible triangulated surface
+final_stl = cropped_stl.extract_surface().triangulate()
+final_stl.save('test/final_co_cropped_model.stl')
+print("Saved STL!")
+
+print("\nSuccess! Both files are perfectly co-cropped and share the exact same bounding box.")
