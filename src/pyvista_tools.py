@@ -53,5 +53,4 @@ def screenshot_slice(input_filepath):
         print(f"Erorr while taking a screenshot slice: {e}")
         return False
 
-
-load_stl('data/missing_struts/stls/0.stl', None)
+screenshot_slice('perfectly_aligned_cropped_model.stl')

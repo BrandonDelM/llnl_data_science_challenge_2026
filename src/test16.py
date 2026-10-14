@@ -1,105 +1,63 @@
-import json
+import trimesh
 import numpy as np
-import pyvista as pv
+import json
 
-def plot_centered_lattice_and_stl(json_path, stl_path, rotation_degrees=90, tube_radius=0.5):
-    print("1. Loading JSON Lattice (Junctions and Struts)...")
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+# ---------- Load STL (full 9x11x9, metal included) ----------
+mesh = trimesh.load('data/missing_struts/stls/0.stl')
 
-    junctions = data['junctions']
-    struts = data['struts']
+# ---------- Load JSON junctions ----------
+with open('data/missing_struts/registered_jsons/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.json') as f:
+    data = json.load(f)
+junction_pts = np.array([j['position'] for j in data['junctions']])
 
-    # --- Build Points Array ---
-    max_id = max(j['id'] for j in junctions)
-    # Initialize array. Note: Unused IDs will remain [0,0,0], which is fine 
-    # as long as the struts array doesn't reference them.
-    points = np.zeros((max_id + 1, 3))
-    
-    # Track valid positions strictly for calculating the true center
-    valid_positions = []
-    
-    for j in junctions:
-        pos = j['position']
-        points[j['id']] = pos
-        valid_positions.append(pos)
-        
-    # Calculate the centroid of the JSON lattice
-    json_center = np.mean(valid_positions, axis=0)
-    
-    # Shift ALL points so the lattice centroid sits at (0, 0, 0)
-    centered_points = points - json_center
+# ---------- Sample points from STL surface ----------
+stl_pts = mesh.sample(20000)  # denser sampling helps ICP converge better
 
-    # --- Build Strut Tubes ---
-    # PyVista line format: [n_points_in_line, p0, p1, n_points_in_line, p0, p1, ...]
-    lines = []
-    for s in struts:
-        lines.extend([2, s['junction0'], s['junction1']])
-    lines = np.array(lines)
+# ---------- Rough pre-alignment (helps ICP avoid bad local minima) ----------
+# Use your already-confirmed orientation fix (metal axis -> matches JSON's longest axis)
+# and a rough scale guess, so ICP starts close to correct.
+stl_centered = stl_pts - stl_pts.mean(axis=0)
+json_centered = junction_pts - junction_pts.mean(axis=0)
 
-    # Create PolyData of line segments
-    lattice_mesh = pv.PolyData(centered_points, lines=lines)
-    
-    # Convert lines -> tubes (cylinders) using the provided thickness
-    lattice_tubes = lattice_mesh.tube(radius=tube_radius)
+rough_scale = np.linalg.norm(json_centered, axis=1).mean() / np.linalg.norm(stl_centered, axis=1).mean()
 
-    # --- Optional: Extract Junctions for plotting as Spheres ---
-    centered_valid_positions = np.array(valid_positions) - json_center
-    junctions_pcd = pv.PolyData(centered_valid_positions)
+initial = np.eye(4)
+initial[:3, :3] *= rough_scale
+initial[:3, 3] = junction_pts.mean(axis=0) - rough_scale * stl_pts.mean(axis=0)
 
-    print("2. Loading and Aligning STL mesh...")
-    mesh = pv.read(stl_path)
-    mesh_center = np.array(mesh.center)
-    
-    # Shift STL to (0,0,0) to perfectly match the JSON center
-    mesh.translate(-mesh_center, inplace=True)
-    
-    # Rotate 90 degrees around Z-axis, spinning on its new center
-    # mesh.rotate_z(rotation_degrees, point=(0, 0, 0), inplace=True)
+# ---------- ICP with scale ----------
+matrix, transformed, cost = trimesh.registration.icp(
+    stl_pts, junction_pts,
+    initial=initial,
+    max_iterations=100,
+    scale=True
+)
+print("ICP cost (lower is better):", cost)
+print("Final transform:\n", matrix)
 
-    print("3. Rendering 3D overlay...")
-    plotter = pv.Plotter()
-    
-    # Plot the STL mesh (Semi-transparent so we can see inside)
-    plotter.add_mesh(
-        mesh, 
-        color="lightblue", 
-        opacity=0.4, 
-        label="Centered STL Mesh"
-    )
-    
-    # Plot the Struts (Silver Tubes)
-    plotter.add_mesh(
-        lattice_tubes, 
-        color='red', 
-        smooth_shading=True,
-        label="JSON Struts"
-    )
+#----- part 2
 
-    # Plot the Junctions (Red Spheres) 
-    # You can comment this out if you only want the tubes!
-    plotter.add_mesh(
-        junctions_pcd, 
-        color="red", 
-        point_size=10, 
-        render_points_as_spheres=True, 
-        label="JSON Nodes"
-    )
-    
-    # Add your reference plane (optional)
-    plane = pv.Plane(center=(0, 0, 0), direction=(0, 0, 1), i_size=5, j_size=5)
-    plotter.add_mesh(plane, show_edges=True, color='lightblue', opacity=0.3)
+# Apply the found transform to the FULL mesh (not just sampled points)
+mesh.apply_transform(matrix)
+print("Aligned STL bounds:", mesh.bounds)
+print("JSON bounds:", junction_pts.min(axis=0), junction_pts.max(axis=0))
 
-    # Set camera and UI
-    plotter.camera_position = 'xz'
-    plotter.add_legend()
-    plotter.set_background("white")
-    
-    plotter.show()
+json_min = junction_pts.min(axis=0)
+json_max = junction_pts.max(axis=0)
 
-if __name__ == "__main__":
-    # Ensure these paths point to your actual files
-    JSON_PATH = "data/missing_struts/registered_jsons/210127_Brian_Tran_strut_lattices_0point5dash1 1 Slices.json"
-    STL_PATH = "registered_model_0.stl"
-    
-    plot_centered_lattice_and_stl(JSON_PATH, STL_PATH, rotation_degrees=90, tube_radius=1.5)
+# Add a small margin so strut walls (which extend slightly past junction centerlines) aren't clipped
+margin = 2.0  # in JSON units — adjust based on strut thickness scaled appropriately
+
+crop_min = json_min - margin
+crop_max = json_max + margin
+
+cropped = mesh.slice_plane(plane_origin=crop_min, plane_normal=[1,0,0])
+cropped = cropped.slice_plane(plane_origin=crop_max, plane_normal=[-1,0,0])
+cropped = cropped.slice_plane(plane_origin=crop_min, plane_normal=[0,1,0])
+cropped = cropped.slice_plane(plane_origin=crop_max, plane_normal=[0,-1,0])
+cropped = cropped.slice_plane(plane_origin=crop_min, plane_normal=[0,0,1])
+cropped = cropped.slice_plane(plane_origin=crop_max, plane_normal=[0,0,-1])
+
+cropped.export('model_aligned_cropped.stl')
+print("Cropped extents:", cropped.bounds[1] - cropped.bounds[0])
+print("JSON extents:   ", json_max - json_min)

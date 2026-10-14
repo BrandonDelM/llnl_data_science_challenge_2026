@@ -37,8 +37,7 @@ def load(input_filepath: str):
     mesh = pv.read(input_filepath)
     return mesh
 
-# mesh = load('test/potential_perfect_alignment.stl')
-
-# print(mesh.bounds)
+mesh = load('data/missing_struts/stls/0.stl')
+print(mesh.bounds)
 # mesh = load('cropped_0.5.stl')
 # print(screenshot_slice(mesh, 0, 'slices/z0_0.5_v2_test_skew.png', 'zy'))
